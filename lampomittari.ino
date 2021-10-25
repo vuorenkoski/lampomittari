@@ -4,7 +4,7 @@
 //
 // mittaa lampotilan lampovastuksella ja lähettää sen serverille.
 // Näytölle tulostetaan mitattu lampo, ulkolampotila ja järven lämpötila.
-// Ulkolämpötila haetaan Ilmatieteen laitoksen vaoimesta datasta. Järven lämpö omalta serveriltä.
+// Ulkolämpötila haetaan Ilmatieteen laitoksen avoimesta datasta. Järven lämpö omalta serveriltä.
 
 int debug=0; // DEBUG PÄÄLLE JA POIS
 
@@ -25,13 +25,16 @@ int korjaus=30; // korjaus asteen kymmenyksinä
 #include <WiFiClient.h>
 ESP8266WiFiMulti WiFiMulti;
 
-const char* ssid     = "silja";
-const char* password = "ylimmainen";
-String payload;
+const char* ssid     = "xxx";
+const char* password = "xxx";
 
-int lampo_lake, lampo_in, lampo_out;
+String fmiUrl="http://opendata.fmi.fi/wfs?request=getFeature&storedquery_id=fmi::observations::weather::simple&fmisid=874863&parameters=temperature&timestep=30&"; // Temperature in Espoo
+String server="http://192.168.1.66";
+int intvl = 15; // Measurement interval in minutes
 
-// nokian näytön määritelyt
+int lampo_lake, lampo_in, lampo_out; // global variables containing latest measurements
+
+// Libraries for Nokia5110
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_PCD8544.h>
@@ -46,7 +49,7 @@ const int8_t THERM_PIN = A0;
 Adafruit_PCD8544 display = Adafruit_PCD8544(DC_PIN, CE_PIN, RST_PIN);
 
 
-// fontit
+// fonts
 static const unsigned char PROGMEM plus [] = {12,12,63,63,12,12};
 static const unsigned char PROGMEM miinus [] = {12,12,12,12,12,12};
 static const unsigned char PROGMEM fontti [][2][10] = {
@@ -95,13 +98,14 @@ const unsigned char PROGMEM tausta [][84] = {
 };
 
 void setup() {
+  if (debug==1) Serial.begin(115200);
+  if (debug==1) Serial.println("Start"); 
 
-  // Näytön määrittely
+  pinMode(THERM_PIN,INPUT);
+
+  // Display
   pinMode(BL_PIN, OUTPUT);
   digitalWrite(BL_PIN, HIGH);
-  if (debug==1) Serial.begin(115200);
-  if (debug==1) Serial.println("alku");
-  
   display.begin();
   display.setContrast(60);  // Adjust for your display
   display.clearDisplay();
@@ -113,7 +117,7 @@ void setup() {
   display.println(ssid);
   display.display();
 
-  // Wifi määrittely
+  // Wifi
   delay(4000);
   WiFi.mode(WIFI_STA);
   WiFiMulti.addAP(ssid, password);
@@ -124,26 +128,27 @@ void setup() {
   }
   display.clearDisplay();
   display.println("Connected");
-  if (debug==1) Serial.println("yhteys ok");
   display.println(WiFi.localIP());
+  if (debug==1) Serial.println("connection ok");
   display.display();
-
-  pinMode(THERM_PIN,INPUT);
+  delay(2000);
 }
 
 void loop() {
   int err,i;
+  String payload;
   WiFiClient client;
   HTTPClient http;
-  err=0;
-  http.begin(client,"http://opendata.fmi.fi/wfs?request=getFeature&storedquery_id=fmi::observations::weather::simple&fmisid=874863&parameters=temperature&timestep=30&");
+  
+  http.begin(client,fmiUrl);
   int httpCode = http.GET();
   if(httpCode > 0) { // httpCode will be negative on error
     if (httpCode == HTTP_CODE_OK) payload = http.getString();
-    if (debug==1) Serial.println("FMI haku ok");
+    if (debug==1) Serial.println("FMI GET ok");
+    err=0;
   } else {
     err=1;
-    if (debug==1) Serial.println("FMI haku ERROR");
+    if (debug==1) Serial.println("FMI GET error");
     display.clearDisplay();
     display.setTextSize(1);
     display.setRotation(0);
@@ -152,46 +157,40 @@ void loop() {
     display.display();
     delay(3000);
   }
-
   delay(100);
-  if (debug==1) Serial.println("http end");
   http.end();
-  if (debug==1) Serial.println("parsi lampo");
-  if (err==0) parsiLampo();
-  else {
-    lampo_out=999;
-    naytaTausta();
-    naytaLampotila(lampo_in,1);
-  }
-  if (debug==1) Serial.println("ulkolampotila ok");
-  mittaaLampo();
-  if (debug==1) Serial.println("sisalampotila ok");
-  haeJarvi();
-  if (debug==1) Serial.println("jarvi ok");
-  if (debug==1) {
-    delay(10000);
+
+  if (err==0) {
+    lampo_out = parseFmiTemp(payload);
   } else {
-    for  (i=0;i<15;i++) delay(60000);
+    lampo_out = 999;
   }
+  lampo_in = measureLocalTemp();
+  lampo_lake = getLakeTemp();
+  displayTemps();
+  
+  if (debug==1) {
+    delay(20000);
+  } else {
+    for  (i=0;i<intvl;i++) delay(60000);
+  }
+  
 }
 
-void parsiLampo() {      
+int parseFmiTemp(String payload) {      
   int pituus,i,k,miinus,lampo_i,hyppaa;
   char lampo[50];
     
   pituus=payload.length();
   hyppaa=5;
-  do 
-  {
+  do {
     k=0; i=0;
-    while (i<hyppaa)
-    {
+    while (i<hyppaa) {
       if (payload.charAt(pituus)=='>') i++;
       pituus=pituus-1;
     }  
     pituus=pituus+2;
-    while (payload.charAt(pituus+k)!='<')
-    {
+    while (payload.charAt(pituus+k)!='<') {
       lampo[k]=payload.charAt(pituus+k);
       k++;
     }
@@ -207,15 +206,13 @@ void parsiLampo() {
   } else if (k==4) lampo_i=lampo_i+(100*(lampo[0]-'0'));
 
   if (miinus) lampo_i=500-lampo_i; else lampo_i=500+lampo_i;
-  lampo_out=lampo_i;
 
-  naytaTausta();
-  naytaLampotila(lampo_i,2);
+  if (debug==1) Serial.print("ulkona:");
+  if (debug==1) Serial.println(lampo_i);
+  return lampo_i;
 }
 
-
-void haeJarvi()
-{
+int getLakeTemp() {
   int pituus,k,lampo_i,err;
   char lampo[50];
   String payload;
@@ -223,14 +220,13 @@ void haeJarvi()
   WiFiClient client;
   HTTPClient http;
   err=0;
-  http.begin(client, "http://www.vuorenkoski.fi/nuottis/jarvi.txt");
+  String url = server+"/control/kysely.php?toiminto=jarvi";
+  http.begin(client, url);
   int httpCode = http.GET();
   
-  if(httpCode > 0) 
-  {
+  if(httpCode > 0) {
     if(httpCode == HTTP_CODE_OK) payload = http.getString();
-  } else 
-  {
+  } else {
     err=1;
     display.clearDisplay();
     display.setTextSize(1);
@@ -240,43 +236,35 @@ void haeJarvi()
     display.display();
     delay(3000);
   }
-
   http.end();
   
-  if (err==0)
-  {      
+  if (err==0) {      
     pituus=payload.length();
     k=0;
-    while (payload.charAt(14+k)!='<')
-    {
+    while (payload.charAt(14+k)!='<') {
       lampo[k]=payload.charAt(14+k);
       k++;
     }
     
-    // lämpötilan tulostus
     lampo_i=(lampo[k-1]-'0')+(10*(lampo[k-3]-'0'));
-    if (k==5) lampo_i=lampo_i+(100*(lampo[1]-'0'));
-    
+    if (k==5) lampo_i=lampo_i+(100*(lampo[1]-'0'));   
     if (lampo[0]=='-') lampo_i=500-lampo_i; else lampo_i=500+lampo_i;
-    naytaLampotila(lampo_i,3);
-    lampo_lake=lampo_i;
-  } else 
-  { 
-    lampo_lake=999;
-    naytaTausta();
-    naytaLampotila(lampo_in,1);
-    naytaLampotila(lampo_out,2);
-    naytaLampotila(lampo_lake,3);
+    lampo_i;
+  } else { 
+    lampo_i=999;
   }
+  if (debug==1) Serial.print("Jarvessa:");
+  if (debug==1) Serial.println(lampo_i);
+  return lampo_i;
 }
 
-void mittaaLampo()
-{
+int measureLocalTemp() {
   uint8_t i;
   float average;
   int lampo_i;
   int samples[NUMSAMPLES];
-  char str[70] = "http://www.vuorenkoski.fi/control/kasky.php?toiminto=KY&teksti=";
+  String str = server+"/control/kasky.php?toiminto=KY&teksti=";
+  char tempStr[6];
   
   // take N samples in a row, with a slight delay
   for (i=0; i< NUMSAMPLES; i++) {
@@ -309,26 +297,30 @@ void mittaaLampo()
   lampo_i=(int) (steinhart*10);
 
   lampo_i=lampo_i+korjaus;
-  lampo_in=500+lampo_i;
-  naytaLampotila(lampo_in,1);
-
-  str[63]='0'+lampo_i/100;
-  str[64]='0'+(lampo_i/10)-((lampo_i/100)*10);
-  str[65]='.';
-  str[66]='0'+lampo_i-((lampo_i/10)*10);
-  str[67]='\0';
-  if (debug!=1) {
+  tempStr[0]='0'+lampo_i/100;
+  tempStr[1]='0'+(lampo_i/10)-((lampo_i/100)*10);
+  tempStr[2]='.';
+  tempStr[3]='0'+lampo_i-((lampo_i/10)*10);
+  tempStr[4]='\0';
+  if (debug==0) {
+    WiFiClient client;
     HTTPClient http;
-    http.begin(str);
+    http.begin(client,str+tempStr);
     int httpCode = http.GET();
     http.end();
   }
+
+  lampo_i=500+lampo_i;
+  if (debug==1) Serial.print("sisalla:");
+  if (debug==1) Serial.println(lampo_i);
+  return lampo_i;
 }
 
-void naytaTausta()
-{
-  display.clearDisplay();
+void displyBackground() {
+  display.begin();
+  display.fillScreen(0);
   display.setRotation(1);
+  
   display.drawBitmap(40, 0, tausta[0], 8, 84, 1);
   display.drawBitmap(32, 0, tausta[1], 8, 84, 1);
   display.drawBitmap(24, 0, tausta[2], 8, 84, 1);
@@ -338,24 +330,24 @@ void naytaTausta()
   display.display();
 }
 
-void naytaLampotila (int numero, int rivi)
-{
+void displayTemp(int numero, int rivi) {
   int luku1,luku2,luku3;
 
-  if (numero>499) 
-  { 
+  if (numero>499) { 
     numero=numero-500;
     if (numero<499) display.drawBitmap(50-(rivi*16),44,plus,8,6,1); // jos luku on 999 niin ei tulosteta
-  } else 
-  { 
+  } else { 
     numero=-(numero-500);
-   display.drawBitmap(50-(rivi*16),44,miinus,8,6,1);
+    display.drawBitmap(50-(rivi*16),44,miinus,8,6,1);
   }
-  if (numero<499)
-  {
+  if (numero<499)  {
     luku1=numero/100;
     luku2=(numero-(luku1*100))/10;
     luku3=numero-(luku1*100)-(luku2*10);
+    if (debug==1) Serial.print("tulostetaan:");
+    if (debug==1) Serial.print(luku1);
+    if (debug==1) Serial.print(luku2);
+    if (debug==1) Serial.println(luku3);
     if (luku1==0) luku1=10;
     display.drawBitmap(56-(rivi*16), 51, fontti[luku1][0], 8, 10, 1);
     display.drawBitmap(48-(rivi*16), 51, fontti[luku1][1], 8, 10, 1);
@@ -363,8 +355,7 @@ void naytaLampotila (int numero, int rivi)
     display.drawBitmap(48-(rivi*16), 61, fontti[luku2][1], 8, 10, 1);
     display.drawBitmap(56-(rivi*16), 74, fontti[luku3][0], 8, 10, 1);
     display.drawBitmap(48-(rivi*16), 74, fontti[luku3][1], 8, 10, 1);
-  } else
-  {
+  } else  {
     display.drawBitmap(56-(rivi*16), 51, fontti[10][0], 8, 10, 1);
     display.drawBitmap(48-(rivi*16), 51, fontti[10][1], 8, 10, 1);
     display.drawBitmap(56-(rivi*16), 61, fontti[10][0], 8, 10, 1);
@@ -373,4 +364,44 @@ void naytaLampotila (int numero, int rivi)
     display.drawBitmap(48-(rivi*16), 74, fontti[10][1], 8, 10, 1);
   }
   display.display();
+}
+
+void displayTemps() {
+  displyBackground();
+  displayTemp(lampo_in,1);
+  displayTemp(lampo_out,2);
+  displayTemp(lampo_lake,3);
+}
+
+void displayTempsText() { // Tekstinäyttö
+  display.clearDisplay();
+  display.print("Sisalla:");
+  display.println(print_temp(lampo_in));
+  display.print("Ulkona :");
+  display.println(print_temp(lampo_out));
+  display.print("Jarvi  :");
+  display.println(print_temp(lampo_lake));
+  display.display();
+}
+
+String print_temp(int numero) {
+  char str[6] = "----";
+  if (numero>999) return str;
+  if (numero>499) { 
+    numero=numero-500;
+    str[0]='+';
+  } else { 
+    numero=-(numero-500);
+    str[0]='-';
+  }
+  int luku1=numero/100;
+  int luku2=(numero-(luku1*100))/10;
+  int luku3=numero-(luku1*100)-(luku2*10);
+  str[1]='0'+luku1;
+  str[2]='0'+luku2;
+  str[3]='.';
+  str[4]='0'+luku3;
+  if (debug==1) Serial.print("temp:");
+  if (debug==1) Serial.println(str);
+  return str;
 }
