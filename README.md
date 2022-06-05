@@ -2,18 +2,19 @@
 
 ## Hardware
 - board: Lolin(Wemos) D1 mini pro, ESP8266
-- näyttö: Nokia5110
-- sensori: lämpötilavastus
-- wifi (integroitu mikrokontrolleriin)
+- display: Nokia5110
+- sensor: ds18b20
+- wifi (integrated to ESP8266)
 
-## Arduinon kirjastot
+## Arduinon libraries
 - ESP8266 board: https://arduino-esp8266.readthedocs.io/en/latest/installing.html
 - Adafruit GFX library (versio 1.10.12)
 - Adarfuit PCD8544 Nokia 5110 LCD library (versio 1.2.1)
+- ArduinoJson (version 6.19.4)
+- DallasTemperature 3.9.0
+- OneWire 2.3.7
 
 ## Toiminta
-Mittaa lampotilan lampovastuksella ja lähettää sen serverille. Näytölle tulostetaan mitattu lampo, ulkolampotila ja järven lämpötila. Ulkolämpötila haetaan Ilmatieteen laitoksen vaoimesta datasta. Järven lämpö omalta serveriltä.
-
-Sisälämpötila lähetetään lisäksi omalle serverille.
+Program gets values of two sensors from server via graphql API (out, lake). Additionally it measures one temperature value itself and sends that to the server (in). 
 
 ![image](kuva.jpg)
