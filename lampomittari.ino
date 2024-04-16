@@ -237,13 +237,13 @@ void displyBackground() {
 void displayTemp(double value, int rivi) {
   int absValue;
   int digit1,digit2,digit3;
-  if (value<999) {
+  if (value<100) {
     if (value<0) {
       display.drawBitmap(50-(rivi*16),44,miinus,8,6,1);
     } else {
       display.drawBitmap(50-(rivi*16),44,plus,8,6,1);
     }
-    absValue=(int)(abs(value)*10);
+    absValue=(int)abs(value*10);
     digit1=absValue/100;
     digit2=(absValue-(digit1*100))/10;
     digit3=absValue-(digit1*100)-(digit2*10);
